@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+database_chroma/
+orders.db
+menu.db

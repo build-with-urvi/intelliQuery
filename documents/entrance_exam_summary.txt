@@ -1,0 +1,29 @@
+Entrance Exams for Admission to Guru Gobind Singh Indraprastha University (GGSIPU) and its Affiliated Colleges
+
+This document summarizes which entrance exam is required for admission to different courses/programmes at GGSIPU, based on the current (2026-27 academic session) admission policy. This is important because GGSIPU's admission policy has changed in recent years — some programmes that previously used the university's own IPU CET (Common Entrance Test) now use national-level entrance exams instead.
+
+IMPORTANT UPDATE for B.Tech admissions:
+Starting from the 2026 academic session, IPU CET is NO LONGER conducted for direct-entry B.Tech admissions. Admission to the B.Tech programme (direct entry after 12th) is now based ENTIRELY on JEE Main scores (and CUET scores may be considered only if seats remain vacant after the JEE Main-based merit list is exhausted). Do not tell students that IPU CET is required for direct B.Tech admission — this is outdated information.
+
+Entrance exam by course/programme:
+
+1. B.Tech (direct entry, after 12th class): JEE Main only. IPU CET is not used for this pathway anymore.
+
+2. Lateral Entry to B.Tech (for Diploma holders or B.Sc graduates joining B.Tech in a later year): IPU CET is still used for these specific lateral entry pathways (e.g. LE B.Tech for Diploma holders, LE B.Tech for B.Sc graduates). Do not confuse this with direct-entry B.Tech, which uses JEE Main.
+
+3. MBBS, BDS, BAMS, BHMS, B.Sc Nursing, and other medical/allied health programmes: NEET UG. Admission to MBBS/BDS is based on NEET UG scores, with counselling partly conducted by GGSIPU (for the state quota) and partly by the Medical Counselling Committee (MCC) for the All India Quota seats.
+
+4. B.Arch (Architecture): NATA (National Aptitude Test in Architecture).
+
+5. Law programmes (BA LLB, BBA LLB, LLB, integrated law courses): CLAT (Common Law Admission Test) is generally required for most law programmes, though some law seats may also be filled via CUET or IPU CET depending on the specific programme and current-year notification.
+
+6. Most other undergraduate programmes such as BBA, BCA, BJMC (Bachelor of Journalism and Mass Communication), B.Com (Hons), and BA programmes: CUET UG (Common University Entrance Test - Undergraduate) is generally used. IPU CET may still apply to a smaller number of specific UG programmes if announced by the university for a given year — always check the current year's official admission brochure for the final, confirmed list of CET-based vs CUET-based courses.
+
+7. Postgraduate programmes such as MBA, MCA, M.Sc, and other master's programmes: CUET PG (Common University Entrance Test - Postgraduate) is generally used. Some specific postgraduate programmes may use other exams (for example, GATE may be relevant for M.Tech/MS admissions).
+
+8. Ph.D. programmes: Admission is typically through a university-conducted Research Entrance Test (RET) or equivalent, followed by an interview, as per the university's Ph.D. admission brochure and regulations — this is separate from the exams listed above for UG/PG admissions.
+
+General guidance for answering questions about entrance exams:
+- If a student asks generally "what exam do I need for GGSIPU," always ask or clarify which specific course/programme they are interested in, since the answer varies significantly by course.
+- If asked specifically about B.Tech, always clarify whether they mean direct entry (JEE Main) or lateral entry (IPU CET) since these are frequently confused.
+- The final, authoritative list of which exam applies to which specific course code is published in the official GGSIPU Admission Brochure for that academic year, which is released around January-February each year on ipu.ac.in. If in doubt about a specific course/programme not covered clearly here, direct the student to check the current official admission brochure or ipu.ac.in.
