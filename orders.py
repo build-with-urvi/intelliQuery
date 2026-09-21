@@ -815,9 +815,9 @@ HUNGER_FOOD_WORDS = {"hungry", "eat", "food", "snack", "meal", "bite", "pizza", 
 ORDER_POLICY_DENYLIST_WORDS = NON_FOOD_INQUIRY_WORDS | {
     "cancel", "cancelled", "canceled", "complaint", "complaints",
     "issue", "wrong", "delayed", "late", "problem", "charge", "charged",
-    "track", "history", "previous", "last", "deliver",
+    "track", "history", "previous", "last", "deliver", "delivered",
+    "delivering", "arrive", "arrived", "arriving", "eta", "when",
 }
-
 
 def _looks_like_casual_order_intent(lowered: str) -> bool:
     words = set(re.findall(r"[a-zA-Z']+", lowered))
