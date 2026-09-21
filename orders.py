@@ -56,6 +56,13 @@ LIMITATIONS (read before relying on this):
   language understanding. A phrasing that isn't in that list (e.g. "got
   any pies?") won't be recognized as a category browse request and will
   fall through to the normal item-matching / "not on the menu" path.
+- A handler in this file can return either a plain string, or a
+  (text, buttons) tuple where `buttons` is a list of up to 3 (id, title)
+  pairs — see the "WhatsApp clickable reply buttons" section below. Only
+  main.py's WhatsApp-sending code needs to know about the tuple form; a
+  button's title is always chosen to be a word the existing free-text
+  parsing already accepts (e.g. "Yes", "Small", "Done"), so tapping a
+  button and typing the same word behave identically.
 """
 
 import os
@@ -717,6 +724,40 @@ ANYTHING_ELSE_PROMPT = (
 )
 
 
+# ---------------------------------------------------------------------------
+# WhatsApp "clickable" reply buttons
+#
+# Any return statement below can be either a plain string (sent as normal
+# text, unchanged from before) or a (text, buttons) tuple, where `buttons`
+# is a list of up to 3 (id, title) pairs. main.py's send_whatsapp_reply()
+# renders the tuple form as tappable WhatsApp reply buttons; the plain
+# string form is unaffected.
+#
+# Every button title below is chosen to be exactly the word the existing
+# free-text parsing already accepts ("Yes"/"No" for _is_affirmative /
+# _is_negative, "Small"/"Medium"/"Large" for _parse_size, "Done" for
+# _is_done_adding, "No changes" for _is_no_changes) — so tapping a button
+# and typing the same word by hand produce identical behaviour. That also
+# means a customer who prefers to type never loses anything; the buttons
+# are purely a tappable shortcut on top of the existing text flow.
+#
+# "add_more" and "done_order" (used on the "anything else?" prompt) and
+# the two greeting buttons ("ask_query"/"place_order", sent by main.py
+# itself before any order conversation has started) are the only ids
+# main.py special-cases rather than piping straight through as text — see
+# the comments in main.py's receive_message.
+# ---------------------------------------------------------------------------
+
+BUTTONS_YES_NO = [("confirm_yes", "Yes"), ("confirm_no", "No")]
+BUTTONS_ADD_MORE_DONE = [("add_more", "Add More"), ("done_order", "Done")]
+BUTTONS_SIZE = [("size_small", "Small"), ("size_medium", "Medium"), ("size_large", "Large")]
+BUTTONS_NO_TOPPING_CHANGE = [("no_toppings", "No changes")]
+
+
+def _with_buttons(text: str, buttons):
+    return (text, buttons)
+
+
 # "What's my order so far?" / "what have I ordered?" style questions —
 # checked with HIGH priority (before menu/order-trigger/casual-intent
 # checks) in both the first-message and mid-order paths, since these
@@ -1143,9 +1184,10 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
                 "step": STEP_REPEAT_CONFIRM,
                 "data": {"last_order_items": last_order["items"]},
             }
-            return (
+            return _with_buttons(
                 f"Here's your last order:\n{summary}\n\n"
-                f"Reply 'yes' to place the same order again, or 'no' if you'd like to change something."
+                f"Reply 'yes' to place the same order again, or 'no' if you'd like to change something.",
+                BUTTONS_YES_NO,
             )
 
         if any(t in lowered for t in ORDER_TRIGGERS):
@@ -1201,7 +1243,7 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
                         "step": STEP_PIZZA_TOPPINGS,
                         "data": {"cart": {}, "pending_pizza": pending},
                     }
-                    return pending.topping_prompt()
+                    return _with_buttons(pending.topping_prompt(), BUTTONS_NO_TOPPING_CHANGE)
                 # Loose match only — e.g. a query with extra descriptive
                 # words the actual pizza name doesn't have. Confirm before
                 # starting the customization flow for a possibly wrong item.
@@ -1212,9 +1254,10 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
                         "substitute_candidate": {"kind": "pizza", "name": pizza_match, "quantity": quantity},
                     },
                 }
-                return (
+                return _with_buttons(
                     f"We don't have that exact pizza, but we do have {pizza_match} — "
-                    f"would you like that instead? (yes/no)"
+                    f"would you like that instead? (yes/no)",
+                    BUTTONS_YES_NO,
                 )
 
             item_match = find_menu_item(tenant, user_text)
@@ -1224,10 +1267,11 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
                     cart = {}
                     _add_to_cart(cart, name, price)
                     _conversations[key] = {"step": STEP_COLLECTING, "data": {"cart": cart}}
-                    return (
+                    return _with_buttons(
                         f"Added {name} (Rs.{price}).\n\n"
                         f"{_current_cart_summary(cart)}\n\n"
-                        f"{ANYTHING_ELSE_PROMPT}"
+                        f"{ANYTHING_ELSE_PROMPT}",
+                        BUTTONS_ADD_MORE_DONE,
                     )
                 _conversations[key] = {
                     "step": STEP_CONFIRM_SUBSTITUTE,
@@ -1236,9 +1280,10 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
                         "substitute_candidate": {"kind": "item", "name": name, "price": price},
                     },
                 }
-                return (
+                return _with_buttons(
                     f"We don't have that exact item, but we do have {name} for Rs.{price} "
-                    f"— would you like that instead? (yes/no)"
+                    f"— would you like that instead? (yes/no)",
+                    BUTTONS_YES_NO,
                 )
 
         return None
@@ -1273,12 +1318,13 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
                 pending = PendingPizzaOrder(tenant, pizza_match, quantity)
                 data["pending_pizza"] = pending
                 state["step"] = STEP_PIZZA_TOPPINGS
-                return pending.topping_prompt()
+                return _with_buttons(pending.topping_prompt(), BUTTONS_NO_TOPPING_CHANGE)
             data["substitute_candidate"] = {"kind": "pizza", "name": pizza_match, "quantity": quantity}
             state["step"] = STEP_CONFIRM_SUBSTITUTE
-            return (
+            return _with_buttons(
                 f"We don't have that exact pizza, but we do have {pizza_match} — "
-                f"would you like that instead? (yes/no)"
+                f"would you like that instead? (yes/no)",
+                BUTTONS_YES_NO,
             )
 
         match = find_menu_item(tenant, user_text)
@@ -1299,17 +1345,19 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
         name, price = match
         if _tokens_confidently_match(user_text, name):
             _add_to_cart(cart, name, price)
-            return (
+            return _with_buttons(
                 f"Added {name} (Rs.{price}).\n\n"
                 f"{_current_cart_summary(cart)}\n\n"
-                f"{ANYTHING_ELSE_PROMPT}"
+                f"{ANYTHING_ELSE_PROMPT}",
+                BUTTONS_ADD_MORE_DONE,
             )
 
         data["substitute_candidate"] = {"kind": "item", "name": name, "price": price}
         state["step"] = STEP_CONFIRM_SUBSTITUTE
-        return (
+        return _with_buttons(
             f"We don't have that exact item, but we do have {name} for Rs.{price} "
-            f"— would you like that instead? (yes/no)"
+            f"— would you like that instead? (yes/no)",
+            BUTTONS_YES_NO,
         )
 
     if step == STEP_CONFIRM_SUBSTITUTE:
@@ -1322,13 +1370,14 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
                 pending = PendingPizzaOrder(tenant, candidate["name"], candidate.get("quantity", 1))
                 data["pending_pizza"] = pending
                 state["step"] = STEP_PIZZA_TOPPINGS
-                return pending.topping_prompt()
+                return _with_buttons(pending.topping_prompt(), BUTTONS_NO_TOPPING_CHANGE)
 
             _add_to_cart(cart, candidate["name"], candidate["price"])
-            return (
+            return _with_buttons(
                 f"Added {candidate['name']} (Rs.{candidate['price']}).\n\n"
                 f"{_current_cart_summary(cart)}\n\n"
-                f"{ANYTHING_ELSE_PROMPT}"
+                f"{ANYTHING_ELSE_PROMPT}",
+                BUTTONS_ADD_MORE_DONE,
             )
 
         if not cart:
@@ -1344,7 +1393,13 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
         # starts at its default base toppings.
 
         state["step"] = STEP_PIZZA_SIZE
-        return pending.size_prompt()
+        size_prompt = pending.size_prompt()
+        if pending.count == 1:
+            # Multi-pizza sizing needs free text ("one small and one
+            # large") — only offer the tap-to-pick shortcut for a single
+            # pizza, where one button unambiguously sets its size.
+            return _with_buttons(size_prompt, BUTTONS_SIZE)
+        return size_prompt
 
     if step == STEP_PIZZA_SIZE:
         pending = data["pending_pizza"]
@@ -1368,10 +1423,11 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
         else:
             added_summary = "\n" + "\n".join(f"  - {lbl}" for lbl in added_labels)
 
-        return (
+        return _with_buttons(
             f"Added {added_summary}.\n\n"
             f"{_current_cart_summary(cart)}\n\n"
-            f"{ANYTHING_ELSE_PROMPT}"
+            f"{ANYTHING_ELSE_PROMPT}",
+            BUTTONS_ADD_MORE_DONE,
         )
 
     if step == STEP_REPEAT_CONFIRM:

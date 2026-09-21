@@ -13,6 +13,7 @@ from booking import (
     get_appointments_needing_reminder,
     mark_reminder_sent,
 )
+import orders
 from orders import handle_order_message
 from admin import router as admin_router
 
@@ -98,6 +99,36 @@ TENANT_CREDENTIALS_BY_NAME = {
 }
 
 
+# ---------------------------------------------------------------------------
+# WhatsApp "clickable" buttons — greeting / mode state
+#
+# For ordering-flow tenants (Domino's), the very first message of a fresh
+# conversation is answered with two tappable buttons — "Ask a Query" and
+# "Place Order" — instead of guessing what a plain first message meant.
+# These two in-memory sets track that per (tenant, phone_number):
+#
+#   - _greeted_users: this contact has already been shown the greeting
+#     buttons once this "session", so we don't re-show them on every
+#     message.
+#   - _query_mode_users: the contact tapped "Ask a Query", so any message
+#     the ordering flow doesn't recognize should go straight to the RAG
+#     chatbot instead of re-showing the greeting buttons.
+#
+# Both are cleared for a (tenant, phone) pair as soon as their order
+# conversation (tracked in orders._conversations) finishes, so the next
+# message they send starts a fresh "session" with the greeting again.
+#
+# Same in-memory caveat as orders._conversations: this resets if the
+# server restarts mid-conversation.
+# ---------------------------------------------------------------------------
+
+_greeted_users = set()
+_query_mode_users = set()
+
+GREETING_TEXT = "Hi! 👋 What would you like to do?"
+GREETING_BUTTONS = [("ask_query", "Ask a Query"), ("place_order", "Place Order")]
+
+
 @app.get("/webhook")
 async def verify_webhook(request: Request):
     params = request.query_params
@@ -131,26 +162,105 @@ async def receive_message(request: Request):
 
         message = value["messages"][0]
         from_number = message["from"]
-        user_text = message["text"]["body"]
+        msg_type = message.get("type")
+
+        # Every inbound WhatsApp message is either plain text, or — when
+        # the customer taps one of our buttons — an "interactive" message
+        # carrying a button_reply. We normalize both into a single
+        # `user_text` string, using the tapped button's TITLE as the text,
+        # so every existing keyword/phrase-matching function in orders.py
+        # and booking.py (e.g. _is_affirmative, _parse_size, _is_done_adding)
+        # keeps working completely unchanged — tapping "Yes" is
+        # indistinguishable from typing "yes". `button_id` is kept
+        # alongside for the couple of buttons (the initial greeting,
+        # "Add More") that need to be special-cased below rather than
+        # treated as ordinary free text.
+        button_id = None
+        if msg_type == "text":
+            user_text = message["text"]["body"]
+        elif msg_type == "interactive":
+            interactive = message.get("interactive", {})
+            interactive_type = interactive.get("type")
+            if interactive_type == "button_reply":
+                button_reply = interactive["button_reply"]
+                button_id = button_reply.get("id")
+                user_text = button_reply.get("title", "")
+            elif interactive_type == "list_reply":
+                # Not used by any flow yet, but handled the same way in
+                # case a list-style message is added later.
+                list_reply = interactive["list_reply"]
+                button_id = list_reply.get("id")
+                user_text = list_reply.get("title", "")
+            else:
+                return {"status": "ignored_unsupported_interactive"}
+        else:
+            # Images, audio, location, etc. — nothing for the text-based
+            # flows below to do with these yet.
+            return {"status": "ignored_unsupported_message_type"}
 
         tenant = tenant_config["tenant"]
         flow = tenant_config.get("flow")
+        key = (tenant, from_number)
 
         special_reply = None
         if flow == "booking":
             special_reply = handle_booking_message(tenant, from_number, user_text)
+
         elif flow == "ordering":
-            special_reply = handle_order_message(tenant, from_number, user_text)
-        # flow == None (or any other value) simply skips straight to RAG
+            if button_id == "ask_query":
+                # Customer wants to talk to the chatbot rather than order —
+                # nothing to answer yet, just confirm and switch modes so
+                # their next message goes straight to RAG.
+                _query_mode_users.add(key)
+                _greeted_users.add(key)
+                special_reply = "Sure! Go ahead and ask me anything 🙂"
+
+            elif button_id == "add_more":
+                # A pure UI nudge from the "anything else?" prompt — there's
+                # no new item text to parse yet, so don't feed the button's
+                # own title into the order parser.
+                special_reply = "Sure! What would you like to add?"
+
+            else:
+                if button_id == "place_order":
+                    # Route exactly like a customer typing "order" would —
+                    # orders.py's casual-intent detection already matches
+                    # the word "order" and starts the collecting flow.
+                    user_text = "order"
+                    _query_mode_users.discard(key)
+                    _greeted_users.add(key)
+
+                had_state_before = key in orders._conversations
+
+                if (
+                    not had_state_before
+                    and key not in _query_mode_users
+                    and key not in _greeted_users
+                ):
+                    # Fresh contact, nothing in progress yet — lead with the
+                    # two clickable options instead of guessing what a plain
+                    # first message meant.
+                    _greeted_users.add(key)
+                    special_reply = (GREETING_TEXT, GREETING_BUTTONS)
+                else:
+                    special_reply = handle_order_message(tenant, from_number, user_text)
+
+                    has_state_after = key in orders._conversations
+                    if had_state_before and not has_state_after:
+                        # Their order (or repeat/modify flow) just finished —
+                        # reset so the next message starts a fresh "session".
+                        _greeted_users.discard(key)
+                        _query_mode_users.discard(key)
+            # flow == None (or any other value) simply skips straight to RAG
 
         if special_reply is not None:
             answer = special_reply
         else:
             answer = await get_rag_answer(user_text, tenant)
 
-        await send_whatsapp_message(
+        await send_whatsapp_reply(
             to_number=from_number,
-            text=answer,
+            reply=answer,
             access_token=tenant_config["access_token"],
             phone_number_id=tenant_config["phone_number_id"],
         )
@@ -185,6 +295,68 @@ async def send_whatsapp_message(
         print("WhatsApp API response:", resp.status_code, resp.text)
         resp.raise_for_status()
         return resp.json()
+
+
+async def send_whatsapp_buttons(
+    to_number: str,
+    body_text: str,
+    buttons,
+    access_token: str,
+    phone_number_id: str,
+):
+    """Send a WhatsApp interactive "reply button" message — up to 3
+    tappable buttons, each an (id, title) pair. `title` is what the
+    customer sees, and it's what comes back verbatim as the text of their
+    next message if they tap it (see the button_reply handling in
+    receive_message above). WhatsApp caps button titles at 20 characters;
+    they're truncated here as a safety net so a too-long title never
+    causes the whole send to fail."""
+    url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body_text},
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {"id": btn_id, "title": btn_title[:20]},
+                    }
+                    for btn_id, btn_title in buttons[:3]
+                ]
+            },
+        },
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        print("WhatsApp API response:", resp.status_code, resp.text)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def send_whatsapp_reply(
+    to_number: str, reply, access_token: str, phone_number_id: str
+):
+    """Send whatever a flow handler (or the greeting logic above) produced.
+    `reply` is either a plain string (sent as normal text, same as always),
+    or a (text, buttons) tuple — as returned by orders.py at its yes/no
+    confirmations, size choice, and "anything else?" prompts, and by the
+    initial greeting above — which is sent as tappable WhatsApp reply
+    buttons instead."""
+    if isinstance(reply, tuple):
+        text, buttons = reply
+        if buttons:
+            await send_whatsapp_buttons(to_number, text, buttons, access_token, phone_number_id)
+            return
+        reply = text
+    await send_whatsapp_message(to_number, reply, access_token, phone_number_id)
 
 
 # ---------------------------------------------------------------------------
