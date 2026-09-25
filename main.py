@@ -1,5 +1,6 @@
 import os
 import traceback
+from datetime import datetime, timedelta
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -100,33 +101,57 @@ TENANT_CREDENTIALS_BY_NAME = {
 
 
 # ---------------------------------------------------------------------------
-# WhatsApp "clickable" buttons — greeting / mode state
+# WhatsApp "clickable" buttons — greeting / session state
 #
-# For ordering-flow tenants (Domino's), the very first message of a fresh
-# conversation is answered with two tappable buttons — "Ask a Query" and
+# For ordering-flow tenants (Domino's), the first message of a fresh
+# "session" is answered with two tappable buttons — "Ask a Query" and
 # "Place Order" — instead of guessing what a plain first message meant.
-# These two in-memory sets track that per (tenant, phone_number):
 #
-#   - _greeted_users: this contact has already been shown the greeting
-#     buttons once this "session", so we don't re-show them on every
-#     message.
-#   - _query_mode_users: the contact tapped "Ask a Query", so any message
-#     the ordering flow doesn't recognize should go straight to the RAG
-#     chatbot instead of re-showing the greeting buttons.
+# What counts as a fresh "session": NOT "has this contact ever completed
+# a full order" (the previous version's rule) — that meant a contact who
+# said "hey" once and never finished an order got permanently skipped for
+# the greeting until the server itself restarted, since _greeted_users
+# only ever grew and almost never shrank. Instead, a session is fresh
+# whenever it's been more than SESSION_TIMEOUT since this contact's last
+# message — an ordinary "it's been a while, so start over" rule, tracked
+# via `_last_seen`.
 #
-# Both are cleared for a (tenant, phone) pair as soon as their order
-# conversation (tracked in orders._conversations) finishes, so the next
-# message they send starts a fresh "session" with the greeting again.
+#   - _last_seen: (tenant, phone_number) -> datetime of their last
+#     message. Checked/updated on every inbound message for an ordering
+#     tenant via _touch_and_check_fresh() below.
+#   - _query_mode_users: contacts who tapped "Ask a Query" and haven't
+#     started a fresh session since — their messages skip the order flow
+#     and go straight to RAG. Cleared automatically once their session
+#     goes stale, so nobody gets stuck in query mode forever either.
 #
 # Same in-memory caveat as orders._conversations: this resets if the
 # server restarts mid-conversation.
 # ---------------------------------------------------------------------------
 
-_greeted_users = set()
+SESSION_TIMEOUT = timedelta(minutes=30)
+
+_last_seen = {}
 _query_mode_users = set()
 
 GREETING_TEXT = "Hi! 👋 What would you like to do?"
 GREETING_BUTTONS = [("ask_query", "Ask a Query"), ("place_order", "Place Order")]
+
+
+def _touch_and_check_fresh(key) -> bool:
+    """Records `key`'s message as happening right now, and returns True
+    if this counts as the start of a NEW session for them — i.e. their
+    previous message (if any) was more than SESSION_TIMEOUT ago, or this
+    is their first message ever. A stale session also clears any
+    leftover "ask a query" mode, so a contact who tapped that long ago
+    gets the greeting again on their next visit rather than being stuck
+    in query mode indefinitely."""
+    now = datetime.now()
+    last = _last_seen.get(key)
+    is_fresh = last is None or (now - last) > SESSION_TIMEOUT
+    _last_seen[key] = now
+    if is_fresh:
+        _query_mode_users.discard(key)
+    return is_fresh
 
 
 @app.get("/webhook")
@@ -207,12 +232,13 @@ async def receive_message(request: Request):
             special_reply = handle_booking_message(tenant, from_number, user_text)
 
         elif flow == "ordering":
+            is_new_session = _touch_and_check_fresh(key)
+
             if button_id == "ask_query":
                 # Customer wants to talk to the chatbot rather than order —
                 # nothing to answer yet, just confirm and switch modes so
                 # their next message goes straight to RAG.
                 _query_mode_users.add(key)
-                _greeted_users.add(key)
                 special_reply = "Sure! Go ahead and ask me anything 🙂"
 
             elif button_id == "add_more":
@@ -228,29 +254,20 @@ async def receive_message(request: Request):
                     # the word "order" and starts the collecting flow.
                     user_text = "order"
                     _query_mode_users.discard(key)
-                    _greeted_users.add(key)
 
                 had_state_before = key in orders._conversations
 
                 if (
                     not had_state_before
                     and key not in _query_mode_users
-                    and key not in _greeted_users
+                    and is_new_session
                 ):
-                    # Fresh contact, nothing in progress yet — lead with the
-                    # two clickable options instead of guessing what a plain
-                    # first message meant.
-                    _greeted_users.add(key)
+                    # Fresh session, nothing in progress yet — lead with
+                    # the two clickable options instead of guessing what
+                    # a plain first message meant.
                     special_reply = (GREETING_TEXT, GREETING_BUTTONS)
                 else:
                     special_reply = handle_order_message(tenant, from_number, user_text)
-
-                    has_state_after = key in orders._conversations
-                    if had_state_before and not has_state_after:
-                        # Their order (or repeat/modify flow) just finished —
-                        # reset so the next message starts a fresh "session".
-                        _greeted_users.discard(key)
-                        _query_mode_users.discard(key)
             # flow == None (or any other value) simply skips straight to RAG
 
         if special_reply is not None:
