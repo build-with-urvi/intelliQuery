@@ -169,15 +169,41 @@ GENERIC_CATEGORY_WORDS = {
 }
 
 
-def _detect_generic_category(text: str):
-    """Returns a category key ('Pizzas', 'Sides', 'Desserts', 'Drinks') if
-    the message is a bare category word/near-synonym, else None. Deliberately
-    narrow — see GENERIC_CATEGORY_WORDS."""
+def _detect_generic_categories(text: str):
+    """Returns EVERY distinct category ('Pizzas', 'Sides', 'Desserts',
+    'Drinks') mentioned in the message, not just the first one found —
+    e.g. 'pizza and desserts' -> ['Pizzas', 'Desserts'], and 'pizza sides
+    desserts drinks' -> all four. Empty list if none found. Order is
+    always Pizzas first, then Sides/Desserts/Drinks (matching
+    format_menu()'s own order) regardless of the order the words
+    appeared in the message, so the combined reply is predictable."""
     words = set(re.findall(r"[a-zA-Z']+", text.lower()))
-    for w in words:
-        if w in GENERIC_CATEGORY_WORDS:
-            return GENERIC_CATEGORY_WORDS[w]
-    return None
+    found = {GENERIC_CATEGORY_WORDS[w] for w in words if w in GENERIC_CATEGORY_WORDS}
+    if not found:
+        return []
+    ordered = [c for c in ("Pizzas", "Sides", "Desserts", "Drinks") if c in found]
+    # Catches any category name beyond the standard four, if the menu
+    # ever grows one — still included, just not front-ordered.
+    ordered += [c for c in found if c not in ordered]
+    return ordered
+
+
+def _detect_generic_category(text: str):
+    """Returns a single category key ('Pizzas', 'Sides', 'Desserts',
+    'Drinks') if the message is a bare category word/near-synonym, else
+    None. Thin wrapper over _detect_generic_categories() for call sites
+    that only ever expect (or want) one category — e.g. the item+leftover
+    combo check, where there's realistically only one leftover word.
+    Deliberately narrow — see GENERIC_CATEGORY_WORDS."""
+    categories = _detect_generic_categories(text)
+    return categories[0] if categories else None
+
+
+def _combined_category_list_message(tenant: str, categories: list) -> str:
+    """Concatenate format_category_list() output for every category in
+    `categories` into one reply — used when a message names more than
+    one bare category at once (see _detect_generic_categories)."""
+    return "\n\n".join(format_category_list(tenant, cat) for cat in categories)
 
 
 # Bare "menu" / "order" (or any of the MENU_ONLY_TRIGGERS phrases) typed
@@ -1240,16 +1266,18 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
         if handled:
             return food_reply
 
-        # A bare category word ("pizza", "drinks", "desserts", "sides" —
-        # see GENERIC_CATEGORY_WORDS) with no specific item name: show just
-        # that section of the menu and start collecting, rather than
-        # dumping the whole menu (too noisy) via the broader casual-intent
-        # fallback below. Checked before that fallback so this narrower,
+        # One or more bare category words ("pizza", "drinks", "desserts",
+        # "sides" — see GENERIC_CATEGORY_WORDS) with no specific item
+        # name: show just those section(s) of the menu and start
+        # collecting, rather than dumping the whole menu (too noisy) via
+        # the broader casual-intent fallback below. "pizza and desserts"
+        # shows both lists in one reply; "pizza sides desserts drinks"
+        # shows all four. Checked before that fallback so this narrower,
         # more useful response wins for these specific words.
-        category = _detect_generic_category(user_text)
-        if category:
+        categories = _detect_generic_categories(user_text)
+        if categories:
             _conversations[key] = {"step": STEP_COLLECTING, "data": {"cart": {}}}
-            return format_category_list(tenant, category)
+            return _combined_category_list_message(tenant, categories)
 
         looks_like_a_question = "?" in user_text or any(
             lowered.startswith(qw) for qw in
@@ -1374,12 +1402,15 @@ def handle_order_message(tenant: str, phone_number: str, user_text: str):
 
         match = find_menu_item(tenant, user_text)
         if match is None:
-            # Bare category word mid-order ("pizza", "drinks", "sides",
-            # "desserts") — show just that section instead of wrongly
-            # saying "not on the menu" (the bug this was added to fix).
-            category = _detect_generic_category(user_text)
-            if category:
-                return format_category_list(tenant, category)
+            # One or more bare category words mid-order ("pizza and
+            # desserts", "sides drinks", etc.) — show those section(s)
+            # instead of wrongly saying "not on the menu" (the bug this
+            # was added to fix), and instead of only showing the FIRST
+            # category mentioned (the follow-up bug: "pizza and desserts"
+            # used to silently drop "desserts").
+            categories = _detect_generic_categories(user_text)
+            if categories:
+                return _combined_category_list_message(tenant, categories)
 
             if _is_menu_request(user_text):
                 cart_note = f"{_current_cart_summary(cart)}\n\n" if cart else ""

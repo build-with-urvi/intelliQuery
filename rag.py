@@ -262,7 +262,7 @@ def generate_menu_unavailable_reply(user_text: str, menu_text: str) -> str:
     system_prompt = MENU_UNAVAILABLE_SYSTEM_PROMPT_TEMPLATE.format(menu_text=menu_text)
 
     response = groq_client.chat.completions.create(
-        model="openai/gpt-oss-120b",
+        model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
